@@ -1,0 +1,344 @@
+<!-- 전면 카메라 밝기 감지로 푸쉬업 횟수를 세는 PWA (목표·세트·휴식·오늘누적 포함) -->
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0d1117" />
+  <title>푸쉬업 카운터</title>
+  <link rel="manifest" href="manifest.json" />
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+    html, body { margin: 0; height: 100%; font-family: -apple-system, "Noto Sans KR", sans-serif;
+      background: #0d1117; color: #fff; overflow: hidden; }
+    #app { height: 100%; display: flex; flex-direction: column; }
+    header { padding: 14px 20px 4px; text-align: center; }
+    header h1 { font-size: 16px; margin: 0; color: #aeb6c2; font-weight: 600; }
+
+    #countWrap { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    #count { font-size: 30vw; font-weight: 800; line-height: 1; letter-spacing: -2px; }
+    #status { margin-top: 8px; font-size: 19px; font-weight: 700; color: #2f6fed; min-height: 24px; }
+    #status.down { color: #ff5a5a; }
+    #sessionInfo { margin-top: 6px; font-size: 15px; color: #cbd3dd; }
+    #todayInfo { margin-top: 2px; font-size: 14px; color: #7cc6f2; font-weight: 700; }
+
+    #gauge { width: 82%; height: 10px; background: #222833; border-radius: 8px; margin: 12px 0 2px; position: relative; overflow: hidden; }
+    #gaugeFill { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: #2f6fed; transition: width 0.05s linear; }
+    #gaugeThresh { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #ff5a5a; left: 65%; }
+    #gaugeLabel { font-size: 11px; color: #7d868f; }
+
+    #controls { padding: 12px 16px calc(14px + env(safe-area-inset-bottom)); background: #131922; border-top: 1px solid #222833; }
+    .row { display: flex; gap: 10px; margin-bottom: 10px; }
+    .row:last-child { margin-bottom: 0; }
+    button { flex: 1; border: none; border-radius: 13px; padding: 14px; font-size: 15px; font-weight: 700; color: #fff; }
+    #startBtn { background: #2f6fed; }
+    #startBtn.stop { background: #ff5a5a; }
+    #calBtn, #resetBtn { background: #3a4250; }
+    .linkbtn { flex: 1; display: block; text-align: center; text-decoration: none;
+      background: #1d2836; color: #7cc6f2; border: 1px solid #2b3a4d;
+      border-radius: 13px; padding: 13px; font-size: 15px; font-weight: 700; }
+
+    .settings { display: flex; gap: 8px; }
+    .field { flex: 1; background: #0d1117; border-radius: 11px; padding: 8px 6px; text-align: center; }
+    .field label { display: block; font-size: 11px; color: #8a919c; margin-bottom: 4px; }
+    .field input { width: 100%; background: transparent; border: none; color: #fff; font-size: 20px; font-weight: 700; text-align: center; }
+    .slider { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #aeb6c2; margin-top: 10px; }
+    .slider input { flex: 1; }
+    #clearToday { background: none; color: #7d868f; font-size: 12px; font-weight: 500; padding: 4px; flex: 0 0 auto; text-decoration: underline; }
+    #notice { text-align: center; font-size: 13px; color: #ff8a8a; padding: 0 20px; min-height: 18px; }
+    video, #sample { display: none; }
+
+    /* 휴식 오버레이 */
+    #rest { position: fixed; inset: 0; background: rgba(9,13,20,0.94); display: none;
+      flex-direction: column; align-items: center; justify-content: center; gap: 18px; z-index: 10; }
+    #rest.show { display: flex; }
+    #rest .lbl { font-size: 20px; color: #7cc6f2; font-weight: 700; }
+    #restTime { font-size: 24vw; font-weight: 800; line-height: 1; }
+    #restSetInfo { font-size: 16px; color: #aeb6c2; }
+    #skipBtn { flex: 0 0 auto; background: #2f6fed; border: none; border-radius: 14px; padding: 13px 40px; font-size: 16px; font-weight: 700; color: #fff; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header><h1>폰 화면을 위로, 가슴 밑 바닥에 두세요</h1></header>
+
+    <div id="countWrap">
+      <div id="count">0</div>
+      <div id="status">시작을 누르세요</div>
+      <div id="sessionInfo">세트 1/3 · 목표 20</div>
+      <div id="todayInfo">오늘 누적 0개</div>
+      <div id="gauge"><div id="gaugeFill"></div><div id="gaugeThresh"></div></div>
+      <div id="gaugeLabel">밝기 (가슴이 가까울수록 왼쪽)</div>
+    </div>
+
+    <div id="notice"></div>
+
+    <div id="controls">
+      <div class="row settings">
+        <div class="field"><label>목표(개)</label><input id="goalIn" type="number" min="1" value="20" /></div>
+        <div class="field"><label>세트</label><input id="setsIn" type="number" min="1" value="3" /></div>
+        <div class="field"><label>휴식(초)</label><input id="restIn" type="number" min="0" value="60" /></div>
+      </div>
+      <div class="row">
+        <button id="startBtn">시작</button>
+        <button id="calBtn">보정</button>
+        <button id="resetBtn">세션 리셋</button>
+      </div>
+      <div class="row">
+        <a class="linkbtn" href="history.html">기록 보기 · 월별/일자별</a>
+      </div>
+      <div class="slider">
+        <span>민감도</span>
+        <input id="sens" type="range" min="0.45" max="0.85" step="0.02" value="0.65" />
+        <span id="sensVal">보통</span>
+        <button id="clearToday">오늘기록 지우기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 휴식 화면 -->
+  <div id="rest">
+    <div class="lbl">휴식</div>
+    <div id="restTime">60</div>
+    <div id="restSetInfo"></div>
+    <button id="skipBtn">건너뛰기</button>
+  </div>
+
+  <video id="video" playsinline muted></video>
+  <canvas id="sample" width="32" height="24"></canvas>
+
+  <script src="rep-counter.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('service-worker.js').catch(() => {}));
+    }
+
+    const $ = (id) => document.getElementById(id);
+    const video = $('video'), sample = $('sample');
+    const sctx = sample.getContext('2d', { willReadFrequently: true });
+    const countEl = $('count'), statusEl = $('status'), sessionInfo = $('sessionInfo'), todayInfo = $('todayInfo');
+    const fillEl = $('gaugeFill'), threshEl = $('gaugeThresh'), noticeEl = $('notice');
+    const startBtn = $('startBtn'), calBtn = $('calBtn'), resetBtn = $('resetBtn');
+    const goalIn = $('goalIn'), setsIn = $('setsIn'), restIn = $('restIn');
+    const sens = $('sens'), sensVal = $('sensVal'), clearToday = $('clearToday');
+    const restEl = $('rest'), restTimeEl = $('restTime'), restSetInfo = $('restSetInfo'), skipBtn = $('skipBtn');
+
+    const counter = new RepCounter({ downRatio: 0.65 });
+    let stream = null, running = false, rafId = null, wakeLock = null;
+    let currentSet = 1, resting = false, restTimer = null, restLeft = 0;
+    let todayTotal = 0;
+
+    // ---------- localStorage: 설정 + 날짜별 기록 ----------
+    // pushup_history = { "2026-07-22": 45, "2026-07-21": 30, ... }
+    const pad2 = (n) => (n < 10 ? '0' + n : '' + n);
+    function todayStr() {
+      const d = new Date();
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    }
+    function readHistory() {
+      try { return JSON.parse(localStorage.getItem('pushup_history') || '{}'); }
+      catch (e) { return {}; }
+    }
+    function writeHistory(h) { localStorage.setItem('pushup_history', JSON.stringify(h)); }
+
+    // 예전 pushup_today(단일 날짜) 데이터를 날짜별 기록으로 1회 이전
+    function migrateOld() {
+      const old = localStorage.getItem('pushup_today');
+      if (!old) return;
+      try {
+        const raw = JSON.parse(old);
+        if (raw && raw.date && raw.total) {
+          const p = String(raw.date).split('-');
+          if (p.length === 3) {
+            const key = p[0] + '-' + pad2(parseInt(p[1])) + '-' + pad2(parseInt(p[2]));
+            const h = readHistory();
+            if (!h[key]) { h[key] = raw.total; writeHistory(h); }
+          }
+        }
+      } catch (e) {}
+      localStorage.removeItem('pushup_today');
+    }
+
+    function loadToday() {
+      migrateOld();
+      todayTotal = readHistory()[todayStr()] || 0;
+      renderToday();
+    }
+    function saveToday() {
+      const h = readHistory();
+      h[todayStr()] = todayTotal;
+      writeHistory(h);
+    }
+    function renderToday() { todayInfo.textContent = '오늘 누적 ' + todayTotal.toLocaleString() + '개'; }
+
+    function loadSettings() {
+      try {
+        const s = JSON.parse(localStorage.getItem('pushup_settings') || '{}');
+        if (s.goal) goalIn.value = s.goal;
+        if (s.sets) setsIn.value = s.sets;
+        if (s.rest != null) restIn.value = s.rest;
+        if (s.sens) { sens.value = s.sens; counter.downRatio = parseFloat(s.sens); }
+      } catch (e) {}
+      updateSensLabel(); renderSession();
+    }
+    function saveSettings() {
+      localStorage.setItem('pushup_settings', JSON.stringify({
+        goal: goalIn.value, sets: setsIn.value, rest: restIn.value, sens: sens.value
+      }));
+    }
+
+    const goal = () => Math.max(1, parseInt(goalIn.value) || 1);
+    const totalSets = () => Math.max(1, parseInt(setsIn.value) || 1);
+    const restSec = () => Math.max(0, parseInt(restIn.value) || 0);
+
+    function renderSession() { sessionInfo.textContent = '세트 ' + currentSet + '/' + totalSets() + ' · 목표 ' + goal(); }
+    function updateSensLabel() {
+      const v = parseFloat(sens.value);
+      sensVal.textContent = v <= 0.53 ? '둔감' : v >= 0.75 ? '예민' : '보통';
+    }
+
+    // ---------- 밝기 ----------
+    function currentLuma() {
+      sctx.drawImage(video, 0, 0, sample.width, sample.height);
+      const d = sctx.getImageData(0, 0, sample.width, sample.height).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4) sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      return sum / (d.length / 4);
+    }
+
+    function beep(freq, dur) {
+      try {
+        const ac = beep._ac || (beep._ac = new (window.AudioContext || window.webkitAudioContext)());
+        const o = ac.createOscillator(), g = ac.createGain();
+        o.frequency.value = freq || 880; o.connect(g); g.connect(ac.destination);
+        g.gain.setValueAtTime(0.25, ac.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + (dur || 0.15));
+        o.start(); o.stop(ac.currentTime + (dur || 0.15));
+      } catch (e) {}
+      if (navigator.vibrate) navigator.vibrate(60);
+    }
+
+    // ---------- 메인 루프 ----------
+    function loop() {
+      if (!running) return;
+      const luma = currentLuma();
+      const t0 = counter.thresholds();
+
+      if (!resting) {
+        const rep = counter.update(luma);
+        if (rep) onRep();
+      }
+
+      const t = counter.thresholds();
+      const pct = Math.max(0, Math.min(100, (luma / (t.baseline || 1)) * 100));
+      fillEl.style.width = pct + '%';
+      threshEl.style.left = (counter.downRatio * 100) + '%';
+      if (!resting) {
+        if (t.state === 'down') { statusEl.textContent = '내려감'; statusEl.classList.add('down'); }
+        else { statusEl.textContent = '올라옴 · 준비'; statusEl.classList.remove('down'); }
+      }
+      rafId = requestAnimationFrame(loop);
+    }
+
+    function onRep() {
+      countEl.textContent = counter.count;
+      todayTotal++; renderToday(); saveToday();
+      beep(880, 0.15);
+      if (counter.count >= goal()) {
+        if (currentSet < totalSets()) startRest();
+        else finishWorkout();
+      }
+    }
+
+    // ---------- 휴식 ----------
+    function startRest() {
+      resting = true;
+      restLeft = restSec();
+      restSetInfo.textContent = '다음: 세트 ' + (currentSet + 1) + '/' + totalSets();
+      restTimeEl.textContent = restLeft;
+      restEl.classList.add('show');
+      beep(660, 0.3);
+      if (restLeft <= 0) { endRest(); return; }
+      restTimer = setInterval(() => {
+        restLeft--;
+        restTimeEl.textContent = restLeft;
+        if (restLeft <= 0) endRest();
+      }, 1000);
+    }
+    function endRest() {
+      if (restTimer) { clearInterval(restTimer); restTimer = null; }
+      restEl.classList.remove('show');
+      currentSet++;
+      counter.reset();
+      counter.calibrate(currentLuma()); // 자세 재준비 상태로 재보정
+      countEl.textContent = '0';
+      renderSession();
+      resting = false;
+      beep(880, 0.2);
+    }
+    skipBtn.addEventListener('click', endRest);
+
+    function finishWorkout() {
+      stop();
+      statusEl.textContent = '완료! 오늘 총 ' + todayTotal + '개 💪';
+      beep(990, 0.5);
+    }
+
+    // ---------- 시작/정지 ----------
+    async function start() {
+      noticeEl.textContent = '';
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+      } catch (e) {
+        noticeEl.textContent = '카메라를 열 수 없습니다: ' + e.message + ' (HTTPS + 카메라 권한 필요)';
+        return;
+      }
+      video.srcObject = stream;
+      await video.play();
+      try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+
+      currentSet = 1; counter.reset(); countEl.textContent = '0'; renderSession();
+      counter.calibrate(currentLuma());
+      running = true; resting = false;
+      startBtn.textContent = '정지'; startBtn.classList.add('stop');
+      statusEl.textContent = '올라옴 · 준비'; statusEl.classList.remove('down');
+      loop();
+    }
+    function stop() {
+      running = false;
+      if (rafId) cancelAnimationFrame(rafId);
+      if (restTimer) { clearInterval(restTimer); restTimer = null; }
+      resting = false; restEl.classList.remove('show');
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+      startBtn.textContent = '시작'; startBtn.classList.remove('stop');
+      statusEl.textContent = '정지됨'; statusEl.classList.remove('down');
+    }
+
+    // ---------- 이벤트 ----------
+    startBtn.addEventListener('click', () => running ? stop() : start());
+    calBtn.addEventListener('click', () => {
+      if (!running) { noticeEl.textContent = '먼저 시작을 누르세요'; return; }
+      counter.calibrate(currentLuma());
+      noticeEl.textContent = '현재 상태로 보정했습니다';
+      setTimeout(() => noticeEl.textContent = '', 1500);
+    });
+    resetBtn.addEventListener('click', () => {
+      currentSet = 1; counter.reset(); countEl.textContent = '0'; renderSession();
+    });
+    sens.addEventListener('input', () => { counter.downRatio = parseFloat(sens.value); updateSensLabel(); saveSettings(); });
+    [goalIn, setsIn, restIn].forEach(el => el.addEventListener('change', () => { renderSession(); saveSettings(); }));
+    clearToday.addEventListener('click', () => { todayTotal = 0; renderToday(); saveToday(); });
+
+    document.addEventListener('visibilitychange', async () => {
+      if (running && !wakeLock && document.visibilityState === 'visible' && 'wakeLock' in navigator) {
+        try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+      }
+    });
+
+    // 초기화
+    loadSettings();
+    loadToday();
+  </script>
+</body>
+</html>
